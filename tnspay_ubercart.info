@@ -1,0 +1,6 @@
+name = TNSPay
+description = Process payments using the TNSPay API
+core = 7.x
+dependencies[] = uc_payment
+dependencies[] = uc_credit
+package = Ubercart - payment

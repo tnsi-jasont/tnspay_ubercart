@@ -1,0 +1,73 @@
+<?php
+/**
+ * @file 
+ * A module that enables the TNSPay API Payment gateway to be integrated into Ubercart Payments.
+ */
+
+/**
+ * Implements hook_uc_payment_gateway() * 
+ */
+function tnspay_ubercart_uc_payment_gateway() {
+  $gateways['tnspay'] = array(
+    'title' => t('TNSPay Gateway'),
+    'description' => t('Process credit card payments through the TNSPay gateway.'),
+    'settings' => 'tnspay_ubercart_settings_form',
+    'credit' => 'tnspay_ubercart_process_transaction',
+  );
+  return $gateways;
+}
+  
+/**
+ * Function for building the settings form 
+ * 
+ * We're starting with the basic 2-party game... 
+ */
+function tnspay_ubercart_settings_form($form, &$form_state) {
+  // Section for setting the base URL and version of the API - might add test v live here also
+  $form['api_settings'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('API URL and Version'),
+      '#description' => t('This information is required for Ubercart to interact with the TNS Payment gateway.  It allows you to choose the version of the gateway or customise it to a specific URL if needed.'),
+  );
+  
+  $form['api_settings']['tnspay_ubercart_api_version'] = array(
+      '#type' => 'select',
+      '#title' => t('API Version'),
+      '#description' => t('The version of the API that you want to connect to. Only supported versions are available'),
+      '#options' => drupal_map_assoc(array(6, 7)),
+      '#default_value' => variable_get('tnspay_ubercart_api_version'),
+  );
+  
+  // Section for managing merchant details
+  $form['merchant_settings'] = array( 
+      '#type' => 'fieldset',
+      '#title' => t('Merchant Settings'),
+      '#description' => t('Manage the merchant ID that was provided to you by TNS.'),
+  );
+  
+  
+  // Section for managing authentication process
+  $form['authentication_settings'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Authentication Settings'),
+      '#description' => t('Set the authentication method that you will use to identify yourself to the TNSPay gateway.  If you are not using a certificate you will need to provide a password which will be stored securely'),
+  );
+  
+  $form['authentication_settings']['tnspay_ubercart_authentication_method'] = array(
+      '#type' => 'radios',
+      '#title' => t('Authentication Method:'),
+      '#options' => array(
+          'certificate' => t('Certificate'),
+          'password' => t('Integration Authentication Password'),
+          ),
+      '#default_value' => variable_get('tnspay_ubercart_authentication_method', 'password'),
+  );
+  
+  return($form);
+}
+/**
+ * Function for actually processing the transaction against the gateway 
+ */
+function tnspay_ubercart_process_transaction() {
+  // Do nothing for the moment...
+}
