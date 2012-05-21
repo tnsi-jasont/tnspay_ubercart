@@ -1,11 +1,16 @@
 <?php
 /**
- * @file 
+* @file
  * A module that enables the TNSPay API Payment gateway to be integrated into Ubercart Payments.
- */
-
+*/
+ 
 /**
- * Implements hook_uc_payment_gateway() * 
+* Defines the base URLs for the TNS API Gateway
+*/
+define('TNSPAY_UBERCART_URL', 'https://secure.ap.tnspayments.com');
+ 
+/**
+* Implements hook_uc_payment_gateway()
  */
 function tnspay_ubercart_uc_payment_gateway() {
   $gateways['tnspay'] = array(
@@ -16,39 +21,34 @@ function tnspay_ubercart_uc_payment_gateway() {
   );
   return $gateways;
 }
-  
+ 
 /**
- * Function for building the settings form 
- * 
- * We're starting with the basic 2-party game... 
+* Function for building the settings form
+ *
+ * We're starting with the basic 2-party game...
  */
 function tnspay_ubercart_settings_form($form, &$form_state) {
-  // Decrypt the sensitive stuff before we display the form... 
+  // Decrypt the sensitive stuff before we display the form...
   /**
    * @todo Do the decryption of sensitive values at the start of this form
    */
-  
+ 
   // Section for setting the base URL and version of the API - might add test v live here also
   $form['api_settings'] = array(
       '#type' => 'fieldset',
       '#title' => t('API URL and Version'),
-      '#description' => t('This information is required for Ubercart to interact with the TNS Payment gateway.  It allows you to choose the version of the gateway or customise it to a specific URL if needed.'),
+      '#description' => t('This information is required for Ubercart to interact with the TNS Payment gateway.  It allows you to choose the version of the gateway or customise it to a specific URL if needed. WARNING - do not adjust URLs unless you know what you\'re doing!'),
   );
   // Set the base URLs
   /**
    * @todo Write a warning about messing with the URLs...
    */
-  $form['api_settings']['tnspay_ubercart_api_URI_live'] = array(
+  $form['api_settings']['tnspay_ubercart_api_URL'] = array(
       '#type' => 'textfield',
-      '#title' => t('URL for the live gateway.'),
-      '#default_value' => variable_get('tnspay_ubercart_api_URI_live','https://secure.ap.tnspayments.com/api/rest'),
-  ); 
+      '#title' => t('Base URL for the TNSPay gateway.'),
+      '#default_value' => variable_get('tnspay_ubercart_api_URL', TNSPAY_UBERCART_URL),
+  );
   
-  $form['api_settings']['tnspay_ubercart_api_URI_test'] = array(
-      '#type' => 'textfield',
-      '#title' => t('URL for the test gateway.'),
-      '#default_value' => variable_get('tnspay_ubercart_api_URI_test','https://secure.ap.tnspayments.com/api/rest'),
-  ); 
   // Set Live vs Test
   $form['api_settings']['tnspay_ubercart_api_mode'] = array(
       '#type' => 'radios',
@@ -60,8 +60,8 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
       ),
       '#default_value' => variable_get('tnspay_ubercart_api_mode','Live'),
   );
-  
-  // Set the version that you're in 
+ 
+  // Set the version that you're in
   $form['api_settings']['tnspay_ubercart_api_version'] = array(
       '#type' => 'select',
       '#title' => t('API Version'),
@@ -69,32 +69,43 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
       '#options' => drupal_map_assoc(array(6, 7)),
       '#default_value' => variable_get('tnspay_ubercart_api_version', '7'),
   );
-  
+ 
   // Section for managing merchant details
-  $form['merchant_settings'] = array( 
+  $form['merchant_settings'] = array(
       '#type' => 'fieldset',
       '#title' => t('Merchant Settings'),
       '#description' => t('Manage the merchant ID that was provided to you by TNS.'),
   );
-  
-  // Set the merchant ID
+ 
+  // Set the Live merchant ID
   /**
-   * @todo Set some formatting/length about this field  
+   * @todo Set some formatting/length about this field 
    */
-  $form['merchant_settings']['tnspay_ubercart_merchant_id'] = array(
-      '#type' => 'textfield', 
-      '#title' => t('Merchant ID'),
-      '#description' => t('The Merchant ID supplied to you by TNS.'),
-      '#default_value' => variable_get('tnspay_ubercart_merchant_id',''),      
-  );  
-  
+  $form['merchant_settings']['tnspay_ubercart_merchant_id_live'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Live Merchant ID'),
+      '#description' => t('The Live Merchant ID supplied to you by TNS.'),
+      '#default_value' => variable_get('tnspay_ubercart_merchant_id_live',''),     
+  ); 
+ 
+  // Set the Test merchant ID
+  /**
+   * @todo Set some formatting/length about this field
+   */
+  $form['merchant_settings']['tnspay_ubercart_merchant_id_test'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Test Merchant ID'),
+      '#description' => t('The Test Merchant ID supplied to you by TNS.'),
+      '#default_value' => variable_get('tnspay_ubercart_merchant_id_test','TEST' . variable_get('tnspay_ubercart_merchant_id_test', '')),
+  );
+ 
   // Section for managing authentication process
   $form['authentication_settings'] = array(
       '#type' => 'fieldset',
       '#title' => t('Authentication Settings'),
       '#description' => t('Set the authentication method that you will use to identify yourself to the TNSPay gateway.  If you are not using a certificate you will need to provide a password which will be stored securely'),
   );
-  
+ 
   // Choose the authentication method - 2 way SSL or Password
   $form['authentication_settings']['tnspay_ubercart_authentication_method'] = array(
       '#type' => 'radios',
@@ -102,11 +113,11 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
       '#options' => array(
           'certificate' => t('Certificate'),
           'password' => t('Integration Authentication Password'),
-          ),
+      ),
       '#default_value' => variable_get('tnspay_ubercart_authentication_method', 'password'),
   );
-  
-  // If password is chosen - make this mandatory... 
+ 
+  // If password is chosen - make this mandatory...
   /**
    * @todo Set some length parameters etc around the integration password field.
    */
@@ -117,25 +128,95 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
       '#default_value' => variable_get('tnspay_ubercart_integration_password_1'),
       '#required' => (variable_get('tnspay_ubercart_authentication_method') == 'password'? TRUE: FALSE),
   );
-  
+ 
   // Send the form back to Drupal..
   return($form);
 }
-
+ 
 /**
- * Function to intercept the save mechanism to allow us to secure sensitive data.
- */
-
+* Function to intercept the save mechanism to allow us to secure sensitive data.
+*/
+ 
 /**
- * Function for actually processing the transaction against the gateway 
- */
-function tnspay_ubercart_process_transaction() {
-  // Do nothing for the moment...
-}
-
-/**
- * Function for encrpypting and decrpyting the sensitive stuff
- */
-function _tnspay_ubercart_encryption() {
+* Function for actually processing the transaction against the gateway
+ *
+ * @todo Decision switching around the type of transaction: Pay vs Auth etc
+* @todo Sort out the TransactionID issue - dropping in a UUID for the moment.. probably should store that against the order?
+* @todo Tweak the order number to make sure that it's in bounds - min 10000000000 is max is 9999999999999999
+*/
+function tnspay_ubercart_process_transaction($order_id, $amount, $data) {
+  // Get the order... we'll need that
+  $order = uc_order_load($order_id);
+  $transaction_id = uniqid();
+  $http_method = 'PUT'; // Default to PUT - should explicitly set anyway depending on transaction type
+ 
   
+  // Build a URL... We'll assume valid data in the variable - 'Live' will be live, all else is assumed to be test...
+  $gateway_is_live = (variable_get('tnspay_ubercart_api_mode') == 'Live')?TRUE:FALSE;
+  // Lay down a base - we're building up to this: https://secure.ap.tnspayments.com/api/rest/version/7/merchant/{merchantId}/order/{orderid}/transaction/{transactionid}
+  $tmpURL = trim(variable_get('tnspay_ubercart_api_URL')); // Remove whitespace
+  // check that it doesn't end in a forward slash, otherwise remove it
+  if(strlen($tmpURL) && substr($tmpURL, -1) == '/') {
+    $tmpURL = rtrim($tmpURL, '/');
+  }
+  // By now we have a good base, let's append the rest of it:
+  $tmpURL .= "/api/rest/version/" . variable_get('tnspay_ubercart_api_version') . "/merchant/" 
+            .($gateway_is_live?variable_get('tnspay_ubercart_merchant_id_live'):variable_get('tnspay_ubercart_merchant_id_test'))
+            ."/order/" . (10000000000 + $order_id) . "/transaction/" . $transaction_id;
+ 
+  // Now that we've got an endpoint to chat to, let's make some data to send as well... do it the easy way with json_encode
+  // NOTE! THIS IS V7 Data structure
+  /**
+   * @todo Maybe move the data packet build to a separate function to build version dependant structures.
+   */
+  $transaction_data = array(
+      'apiOperation' => 'PAY',
+      'cardDetails' => array(
+          'card' => array(
+              'number' => $order->payment_details['cc_number'],
+              'securityCode' => $order->payment_details['cc_cvv'],
+              'expiry' => array(
+                  'month' => $order->payment_details['cc_exp_month'],
+                  'year' => substr($order->payment_details['cc_exp_year'], -2),
+              ),
+              'holder' => array(
+                  'fullName' => $order->payment_details['cc_owner'],
+              ),
+          ),
+      ),
+      'transaction' => array(
+          'amount' => "" . $amount, // Amount actually needs to be a string so do the concat to trick it up...
+          'currency' => $order->currency,
+          ),
+  );
+  // Flip our Array into a json bit
+  $transaction_data_json = json_encode($transaction_data);
+ 
+  // OK - Endpoint - check. Data - check. Connect and shoot!
+  // We'll need to tweak up some header bits and pieces to account for authentication and such...
+  // All in all we'll take the easy route with cURL here.
+  $session = curl_init($tmpURL);
+  curl_setopt_array($session, array(
+      CURLOPT_HTTPAUTH => CURLAUTH_BASIC,
+      CURLOPT_CUSTOMREQUEST => $http_method,
+      CURLOPT_USERPWD => ":" . variable_get('tnspay_ubercart_integration_password_1'),
+      CURLOPT_HTTPHEADER => array('Content-type: application/json;charset=UTF-8', 'Content-length: ' . strlen($transaction_data_json)),
+      CURLOPT_POSTFIELDS => $transaction_data_json,
+    )
+  );
+ 
+  $session_response = curl_exec($session);
+ 
+  echo $session_response;
+  die;
+ 
 }
+ 
+/**
+* Function for encrpypting and decrpyting the sensitive stuff
+*/
+function _tnspay_ubercart_encryption() {
+ 
+}
+ 
+ 
