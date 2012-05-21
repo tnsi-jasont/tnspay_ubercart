@@ -1,16 +1,16 @@
 <?php
 /**
-* @file
+ * @file
  * A module that enables the TNSPay API Payment gateway to be integrated into Ubercart Payments.
-*/
+ */
  
 /**
-* Defines the base URLs for the TNS API Gateway
-*/
+ * Defines the base URLs for the TNS API Gateway
+ */
 define('TNSPAY_UBERCART_URL', 'https://secure.ap.tnspayments.com');
  
 /**
-* Implements hook_uc_payment_gateway()
+ * Implements hook_uc_payment_gateway()
  */
 function tnspay_ubercart_uc_payment_gateway() {
   $gateways['tnspay'] = array(
@@ -23,7 +23,7 @@ function tnspay_ubercart_uc_payment_gateway() {
 }
  
 /**
-* Function for building the settings form
+ * Function for building the settings form
  *
  * We're starting with the basic 2-party game...
  */
@@ -134,23 +134,23 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
 }
  
 /**
-* Function to intercept the save mechanism to allow us to secure sensitive data.
-*/
+ * Function to intercept the save mechanism to allow us to secure sensitive data.
+ */
  
 /**
-* Function for actually processing the transaction against the gateway
+ * Function for actually processing the transaction against the gateway
  *
  * @todo Decision switching around the type of transaction: Pay vs Auth etc
-* @todo Sort out the TransactionID issue - dropping in a UUID for the moment.. probably should store that against the order?
-* @todo Tweak the order number to make sure that it's in bounds - min 10000000000 is max is 9999999999999999
-*/
+ * @todo Sort out the TransactionID issue - dropping in a UUID for the moment.. probably should store that against the order?
+ * @todo Tweak the order number to make sure that it's in bounds - min 10000000000 is max is 9999999999999999
+ */
 function tnspay_ubercart_process_transaction($order_id, $amount, $data) {
   // Get the order... we'll need that
   $order = uc_order_load($order_id);
   $transaction_id = uniqid();
   $http_method = 'PUT'; // Default to PUT - should explicitly set anyway depending on transaction type
- 
-  
+  $api_version = variable_get('tnspay_ubercart_api_version');
+   
   // Build a URL... We'll assume valid data in the variable - 'Live' will be live, all else is assumed to be test...
   $gateway_is_live = (variable_get('tnspay_ubercart_api_mode') == 'Live')?TRUE:FALSE;
   // Lay down a base - we're building up to this: https://secure.ap.tnspayments.com/api/rest/version/7/merchant/{merchantId}/order/{orderid}/transaction/{transactionid}
@@ -160,38 +160,17 @@ function tnspay_ubercart_process_transaction($order_id, $amount, $data) {
     $tmpURL = rtrim($tmpURL, '/');
   }
   // By now we have a good base, let's append the rest of it:
-  $tmpURL .= "/api/rest/version/" . variable_get('tnspay_ubercart_api_version') . "/merchant/" 
+  $tmpURL .= "/api/rest/version/" . $api_version . "/merchant/" 
             .($gateway_is_live?variable_get('tnspay_ubercart_merchant_id_live'):variable_get('tnspay_ubercart_merchant_id_test'))
             ."/order/" . (10000000000 + $order_id) . "/transaction/" . $transaction_id;
+  
+  /**
+   * @todo We need to go into this knowing what type of transaction we're punting eg Auth-Capture vs Auth onl.
+   */
  
   // Now that we've got an endpoint to chat to, let's make some data to send as well... do it the easy way with json_encode
-  // NOTE! THIS IS V7 Data structure
-  /**
-   * @todo Maybe move the data packet build to a separate function to build version dependant structures.
-   */
-  $transaction_data = array(
-      'apiOperation' => 'PAY',
-      'cardDetails' => array(
-          'card' => array(
-              'number' => $order->payment_details['cc_number'],
-              'securityCode' => $order->payment_details['cc_cvv'],
-              'expiry' => array(
-                  'month' => $order->payment_details['cc_exp_month'],
-                  'year' => substr($order->payment_details['cc_exp_year'], -2),
-              ),
-              'holder' => array(
-                  'fullName' => $order->payment_details['cc_owner'],
-              ),
-          ),
-      ),
-      'transaction' => array(
-          'amount' => "" . $amount, // Amount actually needs to be a string so do the concat to trick it up...
-          'currency' => $order->currency,
-          ),
-  );
-  // Flip our Array into a json bit
-  $transaction_data_json = json_encode($transaction_data);
- 
+  $json_data = _tnspay_ubercart_build_json($order, $api_version);
+  
   // OK - Endpoint - check. Data - check. Connect and shoot!
   // We'll need to tweak up some header bits and pieces to account for authentication and such...
   // All in all we'll take the easy route with cURL here.
@@ -213,10 +192,53 @@ function tnspay_ubercart_process_transaction($order_id, $amount, $data) {
 }
  
 /**
-* Function for encrpypting and decrpyting the sensitive stuff
-*/
+ * Function for encrpypting and decrpyting the sensitive stuff
+ */
 function _tnspay_ubercart_encryption() {
  
 }
- 
- 
+
+/**
+ * Function to build the json dataset
+ *
+ * @param &$order 
+ *     Pointer to the original order in the request.
+ *     
+ * @param $api_version
+ *     The Version of the API that the transaction is being submitted through.
+ * 
+ * @return string
+ *		A string containing correctly structured JSON for the version of the API request 
+ */
+function _tnspay_ubercart_build_json(&$order, $api_version) {
+  // initialise
+  $transaction_data = array();
+  
+  // Protect the changing data structures by version
+  switch ($api_version) {
+    case 7:
+      $transaction_data = array(
+          'apiOperation' => 'PAY', // PAY doesn't cut it - need to do Auth then Capture..
+          'cardDetails' => array(
+              'card' => array(
+                  'number' => $order->payment_details['cc_number'],
+                  'securityCode' => $order->payment_details['cc_cvv'],
+                  'expiry' => array(
+                      'month' => $order->payment_details['cc_exp_month'],
+                      'year' => substr($order->payment_details['cc_exp_year'], -2),
+                  ),
+                  'holder' => array(
+                      'fullName' => $order->payment_details['cc_owner'],
+                  ),
+              ),
+          ),
+          'transaction' => array(
+              'amount' => "" . $amount, // Amount actually needs to be a string so do the concat to trick it up...
+              'currency' => $order->currency,
+              ),
+      );
+    default:
+  }
+  // Flip our Array into a JSON structure and return that... 
+  return json_encode($transaction_data);
+}
