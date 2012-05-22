@@ -5,10 +5,18 @@
  */
  
 /**
- * Defines the base URLs for the TNS API Gateway
+ * Define some constants we can use... 
  */
-define('TNSPAY_UBERCART_URL', 'https://secure.ap.tnspayments.com');
- 
+define('TNSPAY_UBERCART_URL', 'https://secure.ap.tnspayments.com'); // Base URL for the TNSPay Direct Gateway
+define('TNSPAY_UBERCART_TXN_AUTH', 'AUTHORIZE'); // Constant for AUTHORIZE transaction type
+define('TNSPAY_UBERCART_TXN_CAPTURE', 'CAPTURE'); // Constant for CAPTURE transaction type
+define('TNSPAY_UBERCART_TXN_PAY', 'PAY'); // Constant for PAY transaction type
+define('TNSPAY_UBERCART_TXN_REFERRAL', 'REFERRAL'); // Constant for REFERRAL transaction type
+define('TNSPAY_UBERCART_TXN_REFUND', 'REFUND'); // Constant for REFUND transaction type
+define('TNSPAY_UBERCART_TXN_VOID', 'VOID'); // Constant for VOID transaction type  
+define('TNSPAY_UBERCART_TXN_VERIFY', 'VERIFY'); // Constant for VOID transaction type  
+define('TNSPAY_UBERCART_TXN_RETRIEVE', 'RETRIEVE'); // Constant for VOID transaction type  
+
 /**
  * Implements hook_uc_payment_gateway()
  */
@@ -141,54 +149,142 @@ function tnspay_ubercart_settings_form($form, &$form_state) {
  * Function for actually processing the transaction against the gateway
  *
  * @todo Decision switching around the type of transaction: Pay vs Auth etc
- * @todo Sort out the TransactionID issue - dropping in a UUID for the moment.. probably should store that against the order?
- * @todo Tweak the order number to make sure that it's in bounds - min 10000000000 is max is 9999999999999999
  */
 function tnspay_ubercart_process_transaction($order_id, $amount, $data) {
+  // Get the User 
+  global $user;
+  
+  // Set up the results to begin with - worst comes to worse we'll fail the result this way... 
+  $result = array(
+      'success' => FALSE,
+      'message' => '',
+      'uid' => $user->uid,
+      'data' => array(),
+      'log_payment' => FALSE,
+      'comment' => '',
+  );
+  
   // Get the order... we'll need that
   $order = uc_order_load($order_id);
-  $transaction_id = uniqid();
-  $http_method = 'PUT'; // Default to PUT - should explicitly set anyway depending on transaction type
-  $api_version = variable_get('tnspay_ubercart_api_version');
-   
-  // Build a URL... We'll assume valid data in the variable - 'Live' will be live, all else is assumed to be test...
-  $gateway_is_live = (variable_get('tnspay_ubercart_api_mode') == 'Live')?TRUE:FALSE;
-  // Lay down a base - we're building up to this: https://secure.ap.tnspayments.com/api/rest/version/7/merchant/{merchantId}/order/{orderid}/transaction/{transactionid}
-  $tmpURL = trim(variable_get('tnspay_ubercart_api_URL')); // Remove whitespace
-  // check that it doesn't end in a forward slash, otherwise remove it
-  if(strlen($tmpURL) && substr($tmpURL, -1) == '/') {
-    $tmpURL = rtrim($tmpURL, '/');
-  }
-  // By now we have a good base, let's append the rest of it:
-  $tmpURL .= "/api/rest/version/" . $api_version . "/merchant/" 
-            .($gateway_is_live?variable_get('tnspay_ubercart_merchant_id_live'):variable_get('tnspay_ubercart_merchant_id_test'))
-            ."/order/" . (10000000000 + $order_id) . "/transaction/" . $transaction_id;
-  
+  $more_operations = TRUE;
+    
   /**
    * @todo We need to go into this knowing what type of transaction we're punting eg Auth-Capture vs Auth onl.
    */
- 
-  // Now that we've got an endpoint to chat to, let's make some data to send as well... do it the easy way with json_encode
-  $json_data = _tnspay_ubercart_build_json($order, $api_version);
+  while ($more_operations) {
+    // Work out what we're doing? 
+    if (!isset($operation)) {
+      switch ($data['txn_type']) {
+        case 'auth_capture':
+          if (isset($data['auth_id']))  {
+            $operation = TNSPAY_UBERCART_TXN_CAPTURE; // if there's already an auth_id on this just do the capture... 
+            break;
+          }
+        case 'authorize':
+          $operation = TNSPAY_UBERCART_TXN_AUTH;
+          break;
+        case 'prior_auth_capture':
+          $operation = TNSPAY_UBERCART_TXN_CAPTURE;
+          break;
+        case 'credit':
+          $operation = TNSPAY_UBERCART_TXN_REFUND;
+          break;
+        case 'void':
+          $operation = TNSPAY_UBERCART_TXN_VOID;
+          break;
+      }
+    }    
+    
+    // OK the basics are set up, so let's start with some data to send... 
+    $json_data = _tnspay_ubercart_build_json($operation, $order, $data, $amount);
   
-  // OK - Endpoint - check. Data - check. Connect and shoot!
-  // We'll need to tweak up some header bits and pieces to account for authentication and such...
-  // All in all we'll take the easy route with cURL here.
-  $session = curl_init($tmpURL);
-  curl_setopt_array($session, array(
-      CURLOPT_HTTPAUTH => CURLAUTH_BASIC,
-      CURLOPT_CUSTOMREQUEST => $http_method,
-      CURLOPT_USERPWD => ":" . variable_get('tnspay_ubercart_integration_password_1'),
-      CURLOPT_HTTPHEADER => array('Content-type: application/json;charset=UTF-8', 'Content-length: ' . strlen($transaction_data_json)),
-      CURLOPT_POSTFIELDS => $transaction_data_json,
-    )
-  );
- 
-  $session_response = curl_exec($session);
- 
-  echo $session_response;
-  die;
- 
+    // If we can put together a connection, then try the transaction
+    if (_tnspay_ubercart_gateway_connect($operation, $order_id, $data, $json_data, $session)) {
+      try {
+        $session_response = curl_exec($session);
+      } catch (Exception $e) {
+          $result['success'] = FALSE;
+          $result['message'] = t("There was a problem communicating with the Payment Gateway.");
+          $result['comment'] = t("Exception Occurred: " . $e->getMessage());
+        
+          // seems we need to explicitly save these comments against the order... 
+          uc_order_comment_save($order_id, $user->uid, $result['comment'], 'admin');
+      }
+    } else { 
+      // Couldn't even put together the connection - fail out. 
+      $result['success'] = FALSE;
+      $result['message'] = t("A connection to the Payment Gateway could not be created.");
+      $result['comment'] = t("Failed at cURL init.");
+      
+      // seems we need to explicitly save these comments against the order...
+      uc_order_comment_save($order_id, $user->uid, $result['comment'], 'admin');
+    }
+    
+    // Neatly close our session.
+    curl_close($session);
+    
+    // If we've got a session response we need to translate it and do something.. 
+    if (isset($session_response)) {
+      // change our JSON to an array {"error":{"cause":"INVALID_REQUEST","explanation":"Value 'PAY' is invalid. Pay request not permitted for this merchant.","field":"apiOperation","validationType":"INVALID"},"result":"ERROR"}
+      $response_array = json_decode($session_response, TRUE);
+  
+      if ($response_array['result'] == 'ERROR') { 
+        /*** UNSUCCESSFUL TRANSACTION ***/
+        // There's been a problem - fail the transaction and make a record
+        $result['success'] = FALSE;
+        $result['message'] = t("There was an error processing the transaction.");
+        $result['comment'] = t("Gateway responded: " . $response_array['error']['explanation']);
+        
+        // seems we need to explicitly save these comments against the order... 
+        uc_order_comment_save($order_id, $user->uid, $result['comment'], 'admin');
+        // No point continuing - flag out. 
+        $more_operations = FALSE;        
+      }
+      else {
+        /*** !!SUCCESSFUL TRANSACTION!! ***/
+        // The transaction made it, determine what to do based on the result
+        $result['success'] = TRUE;
+        $result['message'] = t("Transaction was successfully processed.");
+        $result['comment'] = t("Transaction was succesfully processed - Receipt Number #" . $response_array['transaction']['receipt']);
+        
+        // Not sure if this is needed, but we'll find out... 
+        uc_order_comment_save($order_id, $user->uid, $result['comment'], 'admin');
+        
+        switch ($operation) {
+          case TNSPAY_UBERCART_TXN_AUTH:
+            uc_credit_log_authorization($order_id, $response_array['transaction']['authorizationCode'], $amount);
+            $result['log_payment'] = FALSE;
+            break; 
+          case TNSPAY_UBERCART_TXN_CAPTURE:
+            uc_credit_log_prior_auth_capture($order_id, $response_array['transaction']['authorizationCode']);
+            $result['log_payment'] = TRUE;
+            break;
+        }        
+      }
+    } 
+    // Otherwise there's no response - a bit of a problem really... 
+    else { 
+      $result['success'] = FALSE;
+      $result['message'] = t("The Payment Gateway did not provide a response for the payment request.");
+      uc_order_comment_save($order_id, $user->uid, 'No response from gateway.', 'admin');
+    }
+    
+  //  echo $session_response;
+  //  die;
+    // Pin the $data back to the order before we return it all... 
+    $result['data'] = $data;
+    
+    // See if we've got more transactions to do? 
+    if ($data['txn_type'] == 'auth_capture' && $operation == TNSPAY_UBERCART_TXN_AUTH && $more_operations) { 
+      $operation = TNSPAY_UBERCART_TXN_CAPTURE;
+      $more_operations = TRUE; // We need to go again to do the capture... auth_capture should maybe translate to PAY ?? 
+    } else {
+      $more_operations = FALSE;
+    } 
+  }
+  
+  // Hand it back to uc_credit...
+  return $result;
 }
  
 /**
@@ -201,44 +297,182 @@ function _tnspay_ubercart_encryption() {
 /**
  * Function to build the json dataset
  *
+ * @param $operation
+ *     The operation that will be sent to the gateway - defined by constants
+ *     
  * @param &$order 
  *     Pointer to the original order in the request.
  *     
+ * @param $amount
+ *     The amount that was sent to the function to be processed. 
+ *          
  * @param $api_version
  *     The Version of the API that the transaction is being submitted through.
  * 
  * @return string
- *		A string containing correctly structured JSON for the version of the API request 
+ *    A string containing correctly structured JSON for the version of the API request 
  */
-function _tnspay_ubercart_build_json(&$order, $api_version) {
+function _tnspay_ubercart_build_json($operation, &$order, $data, $amount) {
   // initialise
+  $api_version = variable_get('tnspay_ubercart_api_version');
   $transaction_data = array();
+  
+  // add the apiOperation value if it's required... 
+  switch ($operation) {
+    case TNSPAY_UBERCART_TXN_AUTH:  
+    case TNSPAY_UBERCART_TXN_CAPTURE:  
+    case TNSPAY_UBERCART_TXN_PAY:
+    case TNSPAY_UBERCART_TXN_REFERRAL:
+    case TNSPAY_UBERCART_TXN_REFUND:
+    case TNSPAY_UBERCART_TXN_VERIFY:
+    case TNSPAY_UBERCART_TXN_VOID:  
+      $transaction_data['apiOperation'] = $operation;
+      break;
+  }
+  
+  // NOTE! We use the data straight from the $order to prevent needlessly copying Credit Card data a thousand times in memory.
+  // Start with things that haven't changed... then make version specific additions  
+  if (isset($order->payment_details['cc_number'])) {
+    $transaction_data['cardDetails']['card']['number'] = $order->payment_details['cc_number'];
+  } else {
+    // raise a flag that we don't have a CC number.. how did we even get here?!?
+     
+  }
+  if (isset($order->payment_details['cc_cvv'])) {
+    $transaction_data['cardDetails']['card']['securityCode'] = $order->payment_details['cc_cvv'];
+  }
+  if (isset($order->payment_details['cc_exp_month']) && isset($order->payment_details['cc_exp_year'])) {
+    // Need to make sure we've got a full expiry date...
+    $transaction_data['cardDetails']['card']['expiry']['month'] = $order->payment_details['cc_exp_month'];
+    $transaction_data['cardDetails']['card']['expiry']['year'] = substr($order->payment_details['cc_exp_year'], -2);
+  }
+  if (isset($order->payment_details['cc_owner'])) {
+    $transaction_data['cardDetails']['card']['holder']['fullName'] = $order->payment_details['cc_owner'];
+  }
+  if (isset($amount) && isset($order->currency) && $amount > 0) {
+    // We need a non-zero amount and a currency to go with it...
+    $transaction_data['transaction']['amount'] = "" . $amount;  // Amount actually needs to be a string so do the concat to trick it up...
+    $transaction_data['transaction']['currency'] = $order->currency;
+  } else {
+    // Fail it - can't proceed without this!
+  
+  }
+  
+  $transaction_data['order']['reference'] = $order->order_id;
+  $transaction_data['transaction']['source'] = 'INTERNET';
+  
+  // Is this a capture transaction - if so we need an auth_id otherwise we should fall over.
+  if ($operation == TNSPAY_UBERCART_TXN_CAPTURE && isset($data['auth_id'])) {
+    $transaction_data['transaction']['authorizationCode'] = $data['auth_id'];
+  } elseif ($operation == TNSPAY_UBERCART_TXN_CAPTURE && !isset($data['auth_id'])) {
+    // Error here - we don't have an auth to capture against.
+    
+  }
   
   // Protect the changing data structures by version
   switch ($api_version) {
     case 7:
-      $transaction_data = array(
-          'apiOperation' => 'PAY', // PAY doesn't cut it - need to do Auth then Capture..
-          'cardDetails' => array(
-              'card' => array(
-                  'number' => $order->payment_details['cc_number'],
-                  'securityCode' => $order->payment_details['cc_cvv'],
-                  'expiry' => array(
-                      'month' => $order->payment_details['cc_exp_month'],
-                      'year' => substr($order->payment_details['cc_exp_year'], -2),
-                  ),
-                  'holder' => array(
-                      'fullName' => $order->payment_details['cc_owner'],
-                  ),
-              ),
-          ),
-          'transaction' => array(
-              'amount' => "" . $amount, // Amount actually needs to be a string so do the concat to trick it up...
-              'currency' => $order->currency,
-              ),
-      );
     default:
+      break;
   }
+
   // Flip our Array into a JSON structure and return that... 
   return json_encode($transaction_data);
+}
+
+/**
+ * Function to establish the connection with TNSPay
+ * 
+ * @param $operation 
+ *     The type of transaction operation that's being performed. 
+ * 
+ * @param $order_id
+ *     The $order_id value that the payment is being processed for.
+ *     
+ * @param &$data
+ *     The $data object that was supplied for the order. 
+ * 
+ * @param &$session 
+ *     Take a handle to the session that we're establishing.
+ * 
+ * return boolean
+ *     TRUE if it's created a valid session - FALSE otherwise.
+ */
+function _tnspay_ubercart_gateway_connect($operation, $order_id, &$data, $json_data, &$session) {
+  // Establish some local vars to play with
+  $api_version = variable_get('tnspay_ubercart_api_version');
+  $gateway_is_live = (variable_get('tnspay_ubercart_api_mode') == 'Live')?TRUE:FALSE;
+  
+  $tns_orderid = $order_id + 10000000000; // An order ID is presented in TNS' URL and it needs to be a minimum of 10000000000
+  
+  // We need a transaction ID and we should probably track it with the order...
+  if (!isset($data['tnspay_transaction_id'])) {
+    $data['tnspay_transaction_id'] = array();
+  }
+  
+  array_push($data['tnspay_transaction_id'], uniqid()); // Throw a new unique ID onto the stack
+  $transaction_id = $data['tnspay_transaction_id'][count($data['tnspay_transaction_id']) - 1]; // Make this transaction ID the last in the stack
+
+  switch ($operation) {
+    case TNSPAY_UBERCART_TXN_AUTH:
+    case TNSPAY_UBERCART_TXN_CAPTURE:
+    case TNSPAY_UBERCART_TXN_PAY:
+    case TNSPAY_UBERCART_TXN_REFERRAL:
+    case TNSPAY_UBERCART_TXN_REFUND:
+    case TNSPAY_UBERCART_TXN_VERIFY:
+    case TNSPAY_UBERCART_TXN_VOID:
+      $http_method = 'PUT'; // Default to PUT - should explicitly set anyway depending on transaction type
+      break;
+    case TNSPAY_UBERCART_TXN_RETRIEVE:
+      $http_method = 'GET'; // Default to PUT - should explicitly set anyway depending on transaction type
+      break;
+  }
+  
+  // Lay down a base - we're building up to something like this: https://secure.ap.tnspayments.com/api/rest/version/7/merchant/{merchantId}/order/{orderid}/transaction/{transactionid}
+  $tmpURL = trim(variable_get('tnspay_ubercart_api_URL')); // Remove whitespace
+  // check that it doesn't end in a forward slash, otherwise remove it
+  if(strlen($tmpURL) && substr($tmpURL, -1) == '/') {
+    $tmpURL = rtrim($tmpURL, '/');
+  }
+  
+  // By now we have a good base, let's append the rest of it:
+  $tmpURL .= "/api/rest/version/" . $api_version 
+          . "/merchant/" . ($gateway_is_live?variable_get('tnspay_ubercart_merchant_id_live'):variable_get('tnspay_ubercart_merchant_id_test'))
+          . "/order/" . $tns_orderid 
+          . "/transaction/" . $transaction_id;
+
+  // Try to put it all together - if it goes belly up, bail out.
+  try { 
+    $session = curl_init($tmpURL);
+    
+    curl_setopt_array($session, array(
+        CURLOPT_RETURNTRANSFER => TRUE,
+        CURLOPT_CUSTOMREQUEST => $http_method,
+        CURLOPT_HTTPHEADER => array('Content-type: application/json;charset=UTF-8', 'Content-length: ' . strlen($json_data)),
+        CURLOPT_POSTFIELDS => $json_data,
+      )
+    );
+    
+    // If we're authenticating by passsword - include that here.
+    if (variable_get('tnspay_ubercart_authentication_method') == 'password') {
+      curl_setopt($session, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+      curl_setopt($session, CURLOPT_USERPWD, ":" . variable_get('tnspay_ubercart_integration_password_1')); 
+    }
+    
+  } catch (Exception $e) {
+     $session = NULL;
+     return FALSE;   
+  }
+  
+  return TRUE;  
+}
+
+/** 
+ * Temporary print function
+ * @param unknown_type $arr
+ */
+function _jt_printArr ($arr) {
+  foreach ($arr as $key => $val) {
+      echo "Key: " . $key . " => " . $arr[$key] . "<br>\n";
+  }
 }
